@@ -4,12 +4,12 @@ export const recordSchema=z.object({
   metric:z.enum(['package_detail','package_summary','income','adjusted_income','target','transaction_summary','supervisor_tier','daily_income','channel_income','income_adjustment','branch_performance','branch_package_summary']),
   periodStart:z.iso.date().nullable(),periodEnd:z.iso.date().nullable(),
   quantity:z.number().finite().nullable(),amount:z.number().finite().nullable(),
-  suggestedAmount:z.number().optional(),reviewRequired:z.boolean().optional(),rawValue:z.string().optional(),asOf:z.string().nullable().optional(),reward:z.number().optional(),
+  suggestedAmount:z.number().optional(),reviewRequired:z.boolean().optional(),rawValue:z.string().optional(),asOf:z.iso.date().nullable().optional(),reward:z.number().optional(),
   description:z.string(),category:z.string().nullable(),sourceRef:z.string(),
   issues:z.array(z.string()),
 });
 export type DataRecord=z.infer<typeof recordSchema>;
-export type Document={id:string;name:string;hash:string;createdAt:string;updatedAt?:string;ocrText?:string;aiClassification?:string;ocrReviewed?:boolean;processingProvider?:'local'|'google';kind:string;status:'review'|'approved'|'rejected'|'needs_ai';records:DataRecord[];warnings:string[];source?:Blob;revision:number};
+export type Document={id:string;name:string;hash:string;createdAt:string;updatedAt?:string;ocrText?:string;aiClassification?:string;ocrReviewed?:boolean;processingProvider?:'local'|'google'|'server';kind:string;status:'review'|'approved'|'rejected'|'needs_ai';records:DataRecord[];warnings:string[];source?:Blob;revision:number};
 export function money(v:number|null|undefined){return v==null?'—':new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(v)}
 export function num(v:unknown):number|null{
  if(typeof v==='number')return Number.isFinite(v)?v:null;
@@ -34,15 +34,15 @@ export function validateRecords(records:DataRecord[]):string[]{
  for(const r of records){if(!r.periodStart||!r.periodEnd)issues.push(`${r.entityName}: الفترة غير محددة`);else if(r.periodStart>r.periodEnd)issues.push(`${r.entityName}: نهاية الفترة قبل بدايتها`);if((r.metric.startsWith('package')||r.metric==='branch_package_summary')&&(r.quantity==null||r.amount==null))issues.push(`${r.entityName}: عدد أو قيمة الباقات غير متاح`);if(r.quantity!=null&&r.quantity<0)issues.push(`${r.entityName}: كمية سالبة تحتاج مراجعة`);if(r.metric==='package_summary'&&seen.has(recordKey(r)))issues.push(`${r.entityName}: ملخص مكرر في نفس الفترة`);seen.add(recordKey(r));issues.push(...r.issues)}
  return [...new Set(issues)];
 }
-export function conflicts(incoming:DataRecord[],approved:DataRecord[]){return incoming.flatMap(r=>{const other=approved.filter(a=>recordKey(a)===recordKey(r));return other.filter(a=>a.amount!==r.amount||a.quantity!==r.quantity).map(a=>`${r.entityName}: ${r.description} تغيّرت من ${money(a.amount)} إلى ${money(r.amount)} (${r.sourceRef})`)})}
+export function conflicts(incoming:DataRecord[],approved:DataRecord[]){return incoming.flatMap(r=>{const other=approved.filter(a=>recordKey(a)===recordKey(r));return other.filter(a=>!(a.asOf&&r.asOf&&a.asOf!==r.asOf)&&(a.amount!==r.amount||a.quantity!==r.quantity)).map(a=>`${r.entityName}: ${r.description} تغيّرت من ${money(a.amount)} إلى ${money(r.amount)} (${r.sourceRef})`)})}
 export function effectiveRecords(documents:Pick<Document,'records'|'createdAt'|'status'>[]):DataRecord[]{
- const owners=new Map<string,DataRecord[]>();
+ const owners=new Map<string,{records:DataRecord[];asOf:string|null;createdAt:string}>();
  for(const doc of [...documents].sort((a,b)=>a.createdAt.localeCompare(b.createdAt)).filter(d=>d.status==='approved')){
   const local=new Map<string,DataRecord[]>();
   for(const r of doc.records){const k=recordKey(r);local.set(k,[...(local.get(k)??[]),r])}
-  for(const [k,v] of local)owners.set(k,v);
+  for(const [k,v] of local){const asOf=v.flatMap(r=>r.asOf?[r.asOf]:[]).sort().at(-1)??null;const old=owners.get(k);if(!old||(asOf&&old.asOf?asOf>=old.asOf:doc.createdAt>=old.createdAt))owners.set(k,{records:v,asOf,createdAt:doc.createdAt})}
  }
- const values=[...owners.values()].flat();return values.map(r=>{if(r.branchCode||r.metric!=='package_detail')return r;const candidates=values.filter(x=>x.metric==='package_summary'&&x.entityId===r.entityId&&x.periodStart===r.periodStart&&x.periodEnd===r.periodEnd&&x.branchCode);const codes=[...new Set(candidates.map(x=>x.branchCode))];return codes.length===1?{...r,branchCode:codes[0]}:r});
+ const values=[...owners.values()].flatMap(v=>v.records);return values.map(r=>{if(r.branchCode||r.metric!=='package_detail')return r;const candidates=values.filter(x=>x.metric==='package_summary'&&x.entityId===r.entityId&&x.periodStart===r.periodStart&&x.periodEnd===r.periodEnd&&x.branchCode);const codes=[...new Set(candidates.map(x=>x.branchCode))];return codes.length===1?{...r,branchCode:codes[0]}:r});
 }
 export function reconciliationIssues(records:DataRecord[]):string[]{
  const issues:string[]=[];

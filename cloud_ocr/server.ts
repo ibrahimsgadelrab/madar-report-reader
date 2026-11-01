@@ -12,25 +12,20 @@ if(!token)throw Error('OCR_SERVICE_TOKEN must be configured');
 const rapidUrl=process.env.RAPID_SERVICE_URL??'http://127.0.0.1:8931';
 const python=process.env.RAPID_SERVICE_URL?null:spawn('python',['-m','uvicorn','local_ocr.server:app','--host','127.0.0.1','--port','8931'],{stdio:'inherit'});
 let busy=false;
+type Job={id:string;status:'running'|'done'|'error';message:string;createdAt:number;result?:unknown;error?:string};
+const jobs=new Map<string,Job>();
 const schema=z.object({name:z.string().max(300),image:z.string().max(28_000_000).regex(/^data:image\/(jpeg|png|webp);base64,/)});
-http.createServer(async(req,res)=>{
- res.setHeader('Content-Type','application/json');res.setHeader('Cache-Control','no-store');
- if(req.url==='/health'){res.end(JSON.stringify({ready:true,engine:'RapidOCR + Tesseract templates',cloud:true}));return}
- if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401);res.end('{"error":"Unauthorized"}');return}
- if(req.url!=='/extract'||req.method!=='POST'){res.writeHead(404);res.end('{}');return}
- if(busy){res.writeHead(429);res.end('{"error":"OCR busy; retry later"}');return}
- busy=true;
+async function extract(input:z.infer<typeof schema>,progress:(s:string)=>void){
  let worker:Awaited<ReturnType<typeof createWorker>>|null=null;
  try{
-  let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>30_000_000)throw Error('Image too large')}
-  const input=schema.parse(JSON.parse(raw));const bytes=Buffer.from(input.image.split(',')[1],'base64');
+  const bytes=Buffer.from(input.image.split(',')[1],'base64');progress('تجهيز الصورة على السيرفر');
   const {data,info}=await sharp(bytes,{limitInputPixels:24000000}).ensureAlpha().raw().toBuffer({resolveWithObject:true});
   const image={data,width:info.width,height:info.height};
-  let words:OcrWord[]=[];if(info.width/info.height>2){const second=await fetch(rapidUrl+'/recognize',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({image:input.image}),signal:AbortSignal.timeout(80000)});
+  let words:OcrWord[]=[];if(info.width/info.height>2){progress('قراءة النص والأرقام بمحرك RapidOCR على السيرفر');const second=await fetch(rapidUrl+'/recognize',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({image:input.image}),signal:AbortSignal.timeout(240000)});
   if(!second.ok)throw Error('OCR engine unavailable');words=(await second.json() as {words:OcrWord[]}).words;}
   const employee=parseOcrWords(words,input.name);
-  if(employee.records.some(r=>r.metric==='package_detail')){res.end(JSON.stringify({...employee,records:employee.records.map(r=>({...r,reviewRequired:true})),warnings:['قراءة على السيرفر بمحرك RapidOCR؛ أدخل فترة التقرير وراجع الأرقام.',...employee.warnings]}));return}
-  worker=await createWorker('eng+ara',1,{langPath:path.resolve('models')});
+  if(employee.records.some(r=>r.metric==='package_detail')){return {...employee,records:employee.records.map(r=>({...r,reviewRequired:true})),warnings:['قراءة على السيرفر بمحرك RapidOCR؛ أدخل فترة التقرير وراجع الأرقام.',...employee.warnings]}}
+  progress('فحص تصميم التقرير وتشغيل القارئ المساعد');worker=await createWorker('eng+ara',1,{langPath:path.resolve('models')});
   const recognize:GridRecognizer=async(im,rect,numeric)=>{
    if(rect&&numeric&&im.data===data)return words.filter(w=>w.x+w.width/2>=rect.left&&w.x+w.width/2<rect.left+rect.width&&w.y+w.height/2>=rect.top&&w.y+w.height/2<rect.top+rect.height);
    let render=sharp(Buffer.from(im.data),{raw:{width:im.width,height:im.height,channels:4}});if(rect)render=render.extract(rect);
@@ -38,10 +33,29 @@ http.createServer(async(req,res)=>{
    await worker!.setParameters({tessedit_pageseg_mode:rect?PSM.SINGLE_LINE:PSM.SPARSE_TEXT,tessedit_char_whitelist:numeric?'0123456789,().-':'',user_defined_dpi:'300'});
    const result=await worker!.recognize(png,{}, {text:true,tsv:true});return tsvWords(result.data.tsv??'').map(w=>({...w,x:(w.x-20)/scale+region.left,y:(w.y-20)/scale+region.top,width:w.width/scale,height:w.height/scale}));
   };
-  const result=await readReportProfile(image,input.name,recognize,()=>{})??await readRetailGrid(image,input.name,recognize,()=>{});
+  const result=await readReportProfile(image,input.name,recognize,progress)??await readRetailGrid(image,input.name,recognize,progress);
   if(!result)throw Error('لم يتعرف محرك السيرفر على تصميم التقرير. الأصل محفوظ؛ لا توجد أرقام معتمدة.');
-  res.end(JSON.stringify({...result,records:result.records.map(r=>({...r,reviewRequired:true})),warnings:['تمت القراءة على السيرفر؛ راجع الخانات قبل الاعتماد.',...result.warnings]}));
- }catch(error){res.writeHead(400);res.end(JSON.stringify({error:error instanceof Error?error.message:'OCR failed'}))}
- finally{if(worker)await worker.terminate();busy=false}
+  return {...result,records:result.records.map(r=>({...r,reviewRequired:true})),warnings:['تمت القراءة على السيرفر؛ راجع الخانات قبل الاعتماد.',...result.warnings]};
+
+ }finally{if(worker)await worker.terminate()}
+}
+async function readInput(req:http.IncomingMessage){let size=0;const chunks:Buffer[]=[];for await(const chunk of req){size+=chunk.length;if(size>30000000)throw Error('Image too large');chunks.push(Buffer.from(chunk))}return schema.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')))}
+http.createServer(async(req,res)=>{
+ res.setHeader('Content-Type','application/json');res.setHeader('Cache-Control','no-store');
+ const send=(data:unknown,status=200)=>{res.writeHead(status);res.end(JSON.stringify(data))};
+ if(req.url==='/health'){send({ready:true,engine:'RapidOCR + Tesseract templates',cloud:true,architecture:process.env.RAPID_SERVICE_URL?'split':'combined',version:3});return}
+ if(req.headers.authorization!==`Bearer ${token}`){send({error:'Unauthorized'},401);return}
+ try{
+  if(req.method==='GET'&&req.url?.startsWith('/jobs/')){const job=jobs.get(req.url.slice(6));send(job??{error:'أعيد تشغيل خدمة القراءة أو انتهت صلاحية المهمة؛ الأصل محفوظ ويمكن إعادة المحاولة'},job?200:404);return}
+  if(!['/extract','/jobs'].includes(req.url??'')||req.method!=='POST'){send({error:'Not found'},404);return}
+  if(busy){send({error:'السيرفر يعالج صورة أخرى؛ حاول بعد قليل'},429);return}
+  const input=await readInput(req);busy=true;
+  if(req.url==='/jobs'){
+   for(const [id,job]of jobs)if(Date.now()-job.createdAt>900000&&job.status!=='running')jobs.delete(id);
+   const job:Job={id:crypto.randomUUID(),status:'running',message:'بدء قراءة الصورة على السيرفر',createdAt:Date.now()};jobs.set(job.id,job);send(job,202);
+   void extract(input,message=>{job.message=message}).then(result=>{job.status='done';job.result=result;job.message='اكتملت القراءة — النتيجة جاهزة للمراجعة'}).catch(error=>{job.status='error';job.error=error instanceof Error?error.message:'تعذرت القراءة';job.message='فشلت القراءة؛ الأصل محفوظ'}).finally(()=>{busy=false});return;
+  }
+  try{send(await extract(input,()=>{}))}finally{busy=false}
+ }catch(error){send({error:error instanceof Error?error.message:'OCR failed'},400)}
 }).listen(Number(process.env.PORT??8080),'0.0.0.0');
 process.on('SIGTERM',()=>{python?.kill();process.exit(0)});
