@@ -1,7 +1,7 @@
 import {z} from 'zod';
 export const recordSchema=z.object({
   entityId:z.string(),entityName:z.string(),branchCode:z.string().nullable(),
-  metric:z.enum(['package_detail','package_summary','income','adjusted_income','target','transaction_summary','supervisor_tier','daily_income','channel_income','income_adjustment','branch_performance']),
+  metric:z.enum(['package_detail','package_summary','income','adjusted_income','target','transaction_summary','supervisor_tier','daily_income','channel_income','income_adjustment','branch_performance','branch_package_summary']),
   periodStart:z.iso.date().nullable(),periodEnd:z.iso.date().nullable(),
   quantity:z.number().finite().nullable(),amount:z.number().finite().nullable(),
   suggestedAmount:z.number().optional(),reviewRequired:z.boolean().optional(),rawValue:z.string().optional(),asOf:z.string().nullable().optional(),reward:z.number().optional(),
@@ -31,7 +31,7 @@ export function summarize(records:DataRecord[]):EmployeeSummary[]{
 }
 export function validateRecords(records:DataRecord[]):string[]{
  const issues:string[]=[];const seen=new Set<string>();
- for(const r of records){if(!r.periodStart||!r.periodEnd)issues.push(`${r.entityName}: الفترة غير محددة`);else if(r.periodStart>r.periodEnd)issues.push(`${r.entityName}: نهاية الفترة قبل بدايتها`);if(r.metric.startsWith('package')&&(r.quantity==null||r.amount==null))issues.push(`${r.entityName}: عدد أو قيمة الباقات غير متاح`);if(r.quantity!=null&&r.quantity<0)issues.push(`${r.entityName}: كمية سالبة تحتاج مراجعة`);if(r.metric==='package_summary'&&seen.has(recordKey(r)))issues.push(`${r.entityName}: ملخص مكرر في نفس الفترة`);seen.add(recordKey(r));issues.push(...r.issues)}
+ for(const r of records){if(!r.periodStart||!r.periodEnd)issues.push(`${r.entityName}: الفترة غير محددة`);else if(r.periodStart>r.periodEnd)issues.push(`${r.entityName}: نهاية الفترة قبل بدايتها`);if((r.metric.startsWith('package')||r.metric==='branch_package_summary')&&(r.quantity==null||r.amount==null))issues.push(`${r.entityName}: عدد أو قيمة الباقات غير متاح`);if(r.quantity!=null&&r.quantity<0)issues.push(`${r.entityName}: كمية سالبة تحتاج مراجعة`);if(r.metric==='package_summary'&&seen.has(recordKey(r)))issues.push(`${r.entityName}: ملخص مكرر في نفس الفترة`);seen.add(recordKey(r));issues.push(...r.issues)}
  return [...new Set(issues)];
 }
 export function conflicts(incoming:DataRecord[],approved:DataRecord[]){return incoming.flatMap(r=>{const other=approved.filter(a=>recordKey(a)===recordKey(r));return other.filter(a=>a.amount!==r.amount||a.quantity!==r.quantity).map(a=>`${r.entityName}: ${r.description} تغيّرت من ${money(a.amount)} إلى ${money(r.amount)} (${r.sourceRef})`)})}
