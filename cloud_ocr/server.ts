@@ -34,9 +34,9 @@ http.createServer(async(req,res)=>{
   const recognize:GridRecognizer=async(im,rect,numeric)=>{
    if(rect&&numeric&&im.data===data)return words.filter(w=>w.x+w.width/2>=rect.left&&w.x+w.width/2<rect.left+rect.width&&w.y+w.height/2>=rect.top&&w.y+w.height/2<rect.top+rect.height);
    let render=sharp(Buffer.from(im.data),{raw:{width:im.width,height:im.height,channels:4}});if(rect)render=render.extract(rect);
-   const region=rect??{left:0,top:0,width:im.width,height:im.height};const png=await render.resize({width:region.width*4}).extend({top:20,bottom:20,left:20,right:20,background:'white'}).png().toBuffer();
+   const region=rect??{left:0,top:0,width:im.width,height:im.height};const scale=rect?4:Math.min(4,2600/Math.max(im.width,im.height));const png=await render.resize({width:Math.round(region.width*scale)}).extend({top:20,bottom:20,left:20,right:20,background:'white'}).png().toBuffer();
    await worker!.setParameters({tessedit_pageseg_mode:rect?PSM.SINGLE_LINE:PSM.SPARSE_TEXT,tessedit_char_whitelist:numeric?'0123456789,().-':'',user_defined_dpi:'300'});
-   const result=await worker!.recognize(png,{}, {text:true,tsv:true});return tsvWords(result.data.tsv??'').map(w=>({...w,x:(w.x-20)/4+region.left,y:(w.y-20)/4+region.top,width:w.width/4,height:w.height/4}));
+   const result=await worker!.recognize(png,{}, {text:true,tsv:true});return tsvWords(result.data.tsv??'').map(w=>({...w,x:(w.x-20)/scale+region.left,y:(w.y-20)/scale+region.top,width:w.width/scale,height:w.height/scale}));
   };
   const result=await readReportProfile(image,input.name,recognize,()=>{})??await readRetailGrid(image,input.name,recognize,()=>{});
   if(!result)throw Error('لم يتعرف محرك السيرفر على تصميم التقرير. الأصل محفوظ؛ لا توجد أرقام معتمدة.');
