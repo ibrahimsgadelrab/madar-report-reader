@@ -9,7 +9,8 @@ import {readReportProfile} from '../src/report-profiles';
 import {parseOcrWords,tsvWords,type OcrWord} from '../src/local-ocr';
 const token=process.env.OCR_SERVICE_TOKEN;
 if(!token)throw Error('OCR_SERVICE_TOKEN must be configured');
-const python=spawn('python',['-m','uvicorn','local_ocr.server:app','--host','127.0.0.1','--port','8931'],{stdio:'inherit'});
+const rapidUrl=process.env.RAPID_SERVICE_URL??'http://127.0.0.1:8931';
+const python=process.env.RAPID_SERVICE_URL?null:spawn('python',['-m','uvicorn','local_ocr.server:app','--host','127.0.0.1','--port','8931'],{stdio:'inherit'});
 let busy=false;
 const schema=z.object({name:z.string().max(300),image:z.string().max(28_000_000).regex(/^data:image\/(jpeg|png|webp);base64,/)});
 http.createServer(async(req,res)=>{
@@ -25,8 +26,8 @@ http.createServer(async(req,res)=>{
   const input=schema.parse(JSON.parse(raw));const bytes=Buffer.from(input.image.split(',')[1],'base64');
   const {data,info}=await sharp(bytes,{limitInputPixels:24000000}).ensureAlpha().raw().toBuffer({resolveWithObject:true});
   const image={data,width:info.width,height:info.height};
-  const second=await fetch('http://127.0.0.1:8931/recognize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image:input.image}),signal:AbortSignal.timeout(80000)});
-  if(!second.ok)throw Error('OCR engine unavailable');const words=(await second.json() as {words:OcrWord[]}).words;
+  let words:OcrWord[]=[];if(info.width/info.height>2){const second=await fetch(rapidUrl+'/recognize',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({image:input.image}),signal:AbortSignal.timeout(80000)});
+  if(!second.ok)throw Error('OCR engine unavailable');words=(await second.json() as {words:OcrWord[]}).words;}
   const employee=parseOcrWords(words,input.name);
   if(employee.records.some(r=>r.metric==='package_detail')){res.end(JSON.stringify({...employee,records:employee.records.map(r=>({...r,reviewRequired:true})),warnings:['قراءة على السيرفر بمحرك RapidOCR؛ أدخل فترة التقرير وراجع الأرقام.',...employee.warnings]}));return}
   worker=await createWorker('eng+ara',1,{langPath:path.resolve('models')});
@@ -43,4 +44,4 @@ http.createServer(async(req,res)=>{
  }catch(error){res.writeHead(400);res.end(JSON.stringify({error:error instanceof Error?error.message:'OCR failed'}))}
  finally{if(worker)await worker.terminate();busy=false}
 }).listen(Number(process.env.PORT??8080),'0.0.0.0');
-process.on('SIGTERM',()=>{python.kill();process.exit(0)});
+process.on('SIGTERM',()=>{python?.kill();process.exit(0)});
