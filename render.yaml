@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: madar-report-reader
+    runtime: docker
+    plan: free
+    dockerfilePath: ./cloud_ocr/Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: OCR_SERVICE_TOKEN
+        generateValue: true

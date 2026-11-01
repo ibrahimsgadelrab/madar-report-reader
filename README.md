@@ -1,2 +1,2 @@
-# madar-report-reader
-Stateless OCR service for retail report templates. No uploaded reports or credentials are stored in this repository.
+# Madar report reader
+Stateless OCR service. Uploaded reports are processed in memory, never committed to this repository. Requires OCR_SERVICE_TOKEN. Deploy with cloud_ocr/Dockerfile on Render Free for evaluation.
