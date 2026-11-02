@@ -34,7 +34,7 @@ async function extract(input:z.infer<typeof schema>,progress:(s:string)=>void){
    const result=await worker!.recognize(png,{}, {text:true,tsv:true});return tsvWords(result.data.tsv??'').map(w=>({...w,x:(w.x-20)/scale+region.left,y:(w.y-20)/scale+region.top,width:w.width/scale,height:w.height/scale}));
   };
   const result=await readReportProfile(image,input.name,recognize,progress)??await readRetailGrid(image,input.name,recognize,progress);
-  if(!result)throw Error('لم يتعرف محرك السيرفر على تصميم التقرير. الأصل محفوظ؛ لا توجد أرقام معتمدة.');
+  if(!result){progress('حفظ النص المقروء؛ القالب يحتاج تحديدًا ومراجعة');const readable=words.length?words:await recognize(image,null,false);return {records:[],text:readable.map(w=>w.text).join(' '),warnings:['تمت قراءة محتوى الصورة، لكن تصميمها لا يطابق القوالب المدعومة. لا توجد أرقام جاهزة للاعتماد. قد تكون قصاصة تحتاج الصورة الكاملة أو تحديد نوع التقرير والفترة.']}}
   return {...result,records:result.records.map(r=>({...r,reviewRequired:true})),warnings:['تمت القراءة على السيرفر؛ راجع الخانات قبل الاعتماد.',...result.warnings]};
 
  }finally{if(worker)await worker.terminate()}

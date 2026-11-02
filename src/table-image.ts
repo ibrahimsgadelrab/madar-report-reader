@@ -3,7 +3,10 @@ export type TableGrid={xs:number[];ys:number[]};
 function peaks(counts:number[],threshold:number){const result:number[]=[];let start=-1;for(let i=0;i<=counts.length;i++){if(i<counts.length&&counts[i]>=threshold){if(start<0)start=i}else if(start>=0){result.push(Math.round((start+i-1)/2));start=-1}}return result}
 export function detectGrid(image:PixelImage,minRows=20):TableGrid|null{
  const {data,width,height}=image;const vx=new Array(width).fill(0),hy=new Array(height).fill(0);
- for(let y=0;y<height;y++)for(let x=0;x<width;x++){const p=(y*width+x)*4;const r=data[p],g=data[p+1],b=data[p+2];if(Math.max(r,g,b)<210&&Math.max(r,g,b)-Math.min(r,g,b)<55){vx[x]++;hy[y]++}}
+ for(let y=0;y<height;y++)for(let x=0;x<width;x++){const p=(y*width+x)*4;const r=data[p],g=data[p+1],b=data[p+2];const max=Math.max(r,g,b);if(max<65||(max<210&&max-Math.min(r,g,b)<55)){vx[x]++;hy[y]++}}
+ // Compressed blue cells can have blue rules rather than neutral black rules.
+ // Detect a narrow dark separator relative to both neighboring rows, not the blue fill itself.
+ for(let y=2;y<height-2;y++){let separators=0;for(let x=0;x<width;x++){const p=(y*width+x)*4,a=p-width*8,b=p+width*8;const middle=Math.max(data[p],data[p+1],data[p+2]);if(middle+18<Math.min(Math.max(data[a],data[a+1],data[a+2]),Math.max(data[b],data[b+1],data[b+2])))separators++}if(separators>=width*.64)hy[y]=Math.max(hy[y],separators)}
  const xs=peaks(vx,height*.70),ys=peaks(hy,width*.64);
  if(xs.length<5||ys.length<minRows)return null;
  if(xs[0]>3)xs.unshift(0);if(xs.at(-1)!<width-3)xs.push(width-1);
